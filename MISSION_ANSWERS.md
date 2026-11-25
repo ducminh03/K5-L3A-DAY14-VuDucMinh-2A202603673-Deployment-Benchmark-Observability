@@ -547,9 +547,229 @@ StatusCode=200
 
 ### Exercise 4.1: API Key authentication
 
+#### API key được check ở đâu?
+
+API key được lấy từ biến môi trường `AGENT_API_KEY` và đọc tại phần cấu hình API key trong [app.py](./04-api-gateway/develop/app.py). Dependency `verify_api_key()` kiểm tra header `X-API-Key` và được inject vào endpoint `POST /ask` bằng `Depends(verify_api_key)`.
+
+#### Điều gì xảy ra nếu thiếu hoặc sai key?
+
+- Không có header `X-API-Key`: trả HTTP `401 Unauthorized` với thông báo yêu cầu API key.
+- Có API key nhưng sai: trả HTTP `403 Forbidden` với thông báo `Invalid API key.`.
+- API key đúng: request được xử lý và trả HTTP `200 OK`.
+
+#### Cách rotate key
+
+Đổi giá trị biến môi trường `AGENT_API_KEY` sang key mới trong môi trường deploy, sau đó restart/redeploy service. Không hardcode key trong source code và không commit key thật vào Git.
+
+#### Cấu hình và chạy local
+
+```powershell
+$env:AGENT_API_KEY='secret-key-123'
+python app.py
+```
+
+#### Test không có key
+
+```powershell
+iwr -UseBasicParsing -SkipHttpErrorCheck -Method POST `
+  -Uri "http://localhost:8000/ask" `
+  -ContentType "application/json" `
+  -Body '{"question":"Hello"}'
+```
+
+```text
+StatusCode=401
+{"detail":"Missing API key. Include header: X-API-Key: <your-key>"}
+```
+
+#### Test với key sai
+
+```powershell
+iwr -UseBasicParsing -SkipHttpErrorCheck -Method POST `
+  -Uri "http://localhost:8000/ask" `
+  -Headers @{"X-API-Key"="wrong-key"} `
+  -ContentType "application/json" `
+  -Body '{"question":"Hello"}'
+```
+
+```text
+StatusCode=403
+{"detail":"Invalid API key."}
+```
+
+#### Test với key đúng
+
+```powershell
+iwr -UseBasicParsing -Method POST `
+  -Uri "http://localhost:8000/ask" `
+  -Headers @{"X-API-Key"="secret-key-123"} `
+  -ContentType "application/json" `
+  -Body '{"question":"Hello"}'
+```
+
+```text
+StatusCode=200
+{"question":"Hello","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic."}
+```
+
 ### Exercise 4.2: JWT authentication
 
+#### JWT flow
+
+1. Client gửi username/password tới `POST /auth/token`.
+2. Server xác thực thông tin đăng nhập trong `auth.py`.
+3. Server tạo JWT chứa `sub`, `role`, `iat` và `exp` bằng thuật toán HS256.
+4. Client gửi token trong header `Authorization: Bearer <token>` khi gọi endpoint được bảo vệ.
+5. Server verify chữ ký và hạn sử dụng token trước khi xử lý request.
+
+#### Lưu ý về hướng dẫn đề bài
+
+Đề bài dùng endpoint `/token` với tài khoản `admin/secret`, nhưng code production thực tế dùng endpoint `/auth/token` và demo credentials `student/demo123` hoặc `teacher/teach456`. Vì vậy, test được thực hiện theo code thực tế.
+
+Port `8000` đang được dùng bởi Exercise 4.1, nên JWT app được chạy ở port `8001` để tránh xung đột.
+
+#### Cài dependency và chạy app
+
+```powershell
+cd 04-api-gateway/production
+python -m pip install -r requirements.txt
+$env:JWT_SECRET='exercise-4-2-secret'
+$env:PORT='8001'
+python app.py
+```
+
+Dependency `PyJWT` được cài bổ sung vì lần chạy đầu báo `ModuleNotFoundError: No module named 'jwt'`.
+
+#### Lấy JWT token
+
+```powershell
+$tokenResponse = iwr -UseBasicParsing -Method POST `
+  -Uri "http://localhost:8001/auth/token" `
+  -ContentType "application/json" `
+  -Body '{"username":"student","password":"demo123"}'
+```
+
+**Kết quả:** HTTP `200 OK`, token nhận được, thời hạn `60` phút. Token thật không dán vào báo cáo.
+
+#### Test endpoint sai theo đề bài
+
+```powershell
+iwr -UseBasicParsing -SkipHttpErrorCheck -Method POST `
+  -Uri "http://localhost:8001/token" `
+  -ContentType "application/json" `
+  -Body '{"username":"admin","password":"secret"}'
+```
+
+```text
+StatusCode=404
+{"detail":"Not Found"}
+```
+
+#### Test không có token
+
+```powershell
+iwr -UseBasicParsing -SkipHttpErrorCheck -Method POST `
+  -Uri "http://localhost:8001/ask" `
+  -ContentType "application/json" `
+  -Body '{"question":"Explain JWT"}'
+```
+
+```text
+StatusCode=401
+{"detail":"Authentication required. Include: Authorization: Bearer <token>"}
+```
+
+#### Test token sai
+
+```powershell
+iwr -UseBasicParsing -SkipHttpErrorCheck -Method POST `
+  -Uri "http://localhost:8001/ask" `
+  -Headers @{Authorization="Bearer invalid-token"} `
+  -ContentType "application/json" `
+  -Body '{"question":"Explain JWT"}'
+```
+
+```text
+StatusCode=403
+{"detail":"Invalid token."}
+```
+
+#### Test token hợp lệ
+
+```powershell
+$token = ($tokenResponse.Content | ConvertFrom-Json).access_token
+iwr -UseBasicParsing -Method POST `
+  -Uri "http://localhost:8001/ask" `
+  -Headers @{Authorization="Bearer $token"} `
+  -ContentType "application/json" `
+  -Body '{"question":"Explain JWT"}'
+```
+
+```text
+StatusCode=200
+{"question":"Explain JWT","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":9,"budget_remaining_usd":1.9e-05}}
+```
+
 ### Exercise 4.3: Rate limiting
+
+#### Thuật toán
+
+Code sử dụng **Sliding Window Counter**. Mỗi user có một `deque` chứa timestamp của các request. Trước mỗi request, các timestamp cũ hơn `60` giây sẽ bị xóa; nếu số request còn lại đạt giới hạn thì server trả HTTP `429 Too Many Requests`.
+
+#### Giới hạn request
+
+- User: `10 requests / 60 giây`.
+- Admin: `100 requests / 60 giây`.
+
+Trong mô tả có chỗ ghi “60 phút”, nhưng code thực tế đặt `window_seconds=60`, tức là **60 giây**.
+
+#### Cách admin vượt giới hạn user
+
+Admin không bypass thuật toán bằng cách phá cơ chế rate limit. Khi JWT có `role=admin`, code chọn limiter riêng:
+
+```python
+limiter = rate_limiter_admin if role == "admin" else rate_limiter_user
+```
+
+Vì vậy, cách hợp lệ để có limit cao hơn là đăng nhập bằng tài khoản có role `admin` (`teacher/teach456`). Admin được cấp limit `100 requests / 60 giây`, nên 20 request liên tiếp không bị chặn. Nếu admin vượt quá 100 request trong cùng cửa sổ 60 giây thì vẫn nhận HTTP `429`.
+
+#### Test PowerShell — user
+
+```powershell
+$base='http://localhost:8001'
+$student = (iwr -UseBasicParsing -Method POST -Uri "$base/auth/token" -ContentType 'application/json' -Body '{"username":"student","password":"demo123"}').Content | ConvertFrom-Json | Select-Object -ExpandProperty access_token
+$body='{ "question": "Rate limit test" }'
+1..20 | % {
+  $resp=iwr -UseBasicParsing -SkipHttpErrorCheck -Method POST -Uri "$base/ask" -Headers @{Authorization="Bearer $student"} -ContentType 'application/json' -Body $body
+  "{0}:{1}" -f $_,$resp.StatusCode
+}
+```
+
+**Kết quả:** Request `1–10` trả `200`; request `11–20` trả `429`.
+
+```text
+USER_200=10 USER_429=10
+```
+
+#### Test PowerShell — admin
+
+```powershell
+$teacher = (iwr -UseBasicParsing -Method POST -Uri "$base/auth/token" -ContentType 'application/json' -Body '{"username":"teacher","password":"teach456"}').Content | ConvertFrom-Json | Select-Object -ExpandProperty access_token
+1..20 | % {
+  $resp=iwr -UseBasicParsing -SkipHttpErrorCheck -Method POST -Uri "$base/ask" -Headers @{Authorization="Bearer $teacher"} -ContentType 'application/json' -Body $body
+  "{0}:{1}" -f $_,$resp.StatusCode
+}
+```
+
+**Kết quả:** Cả 20 request của admin đều trả `200`.
+
+```text
+ADMIN_200=20 ADMIN_429=0
+```
+
+#### Kết luận
+
+Rate limiter hoạt động đúng theo role: user bị giới hạn sau 10 request/60 giây, còn admin có ngưỡng 100 request/60 giây. Đây là phân tầng quyền hợp lệ, không phải bypass trái phép.
 
 ### Exercise 4.4: Cost guard
 
