@@ -772,18 +772,100 @@ ADMIN_200=20 ADMIN_429=0
 Rate limiter hoạt động đúng theo role: user bị giới hạn sau 10 request/60 giây, còn admin có ngưỡng 100 request/60 giây. Đây là phân tầng quyền hợp lệ, không phải bypass trái phép.
 
 ### Exercise 4.4: Cost guard
+Lab đề bài đã implement sẵn.
 
 ## Part 5: Scaling & Reliability
 
 ### Exercise 5.1: Health checks
-
+Lab đề bài đã implement sẵn.
 ### Exercise 5.2: Graceful shutdown
-
+Lab đề bài đã implement sẵn. Không test được vì Windows không có cơ chế signal giống các hệ điều hành POSIX.
 ### Exercise 5.3: Stateless design
-
+Lab đề bài đã implement sẵn.
 ### Exercise 5.4: Load balancing
 
+#### Lệnh khởi động stack
+
+Chạy từ thư mục `05-scaling-reliability/production` với project name riêng:
+
+```powershell
+docker compose -p k5-day14-scaling up -d --build --scale agent=3
+```
+
+#### Trạng thái service
+
+Stack khởi động thành công với:
+
+- `agent-1`: healthy
+- `agent-2`: healthy
+- `agent-3`: healthy
+- `redis`: healthy
+- `nginx`: chạy và expose `localhost:8080`
+
+#### Test 10 requests
+
+```powershell
+$body='{ "question": "Request TEST", "session_id": "load-test-5-4" }'
+1..10 | % {
+  $resp=iwr -UseBasicParsing -Method POST -Uri 'http://localhost:8080/chat' -ContentType 'application/json' -Body ($body -replace 'TEST',$_)
+  $j=$resp.Content | ConvertFrom-Json
+  "{0}: served_by={1} status={2}" -f $_,$j.served_by,$resp.StatusCode
+}
+```
+
+**Kết quả thực tế:**
+
+```text
+1: served_by=instance-4429f9 status=200
+2: served_by=instance-1ce1aa status=200
+3: served_by=instance-aedfd7 status=200
+4: served_by=instance-4429f9 status=200
+5: served_by=instance-1ce1aa status=200
+6: served_by=instance-aedfd7 status=200
+7: served_by=instance-4429f9 status=200
+8: served_by=instance-1ce1aa status=200
+9: served_by=instance-aedfd7 status=200
+10: served_by=instance-4429f9 status=200
+```
+
+**Kết luận:** Nginx đã phân phối request qua cả 3 agent instance; tất cả request trả HTTP `200`.
+
 ### Exercise 5.5: Test stateless
+
+#### Lệnh chạy test
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'
+python test_stateless.py
+```
+
+Lần chạy đầu trên PowerShell bị `UnicodeEncodeError` do console dùng CP1252. Chạy lại với `PYTHONIOENCODING=utf-8` thì test hoàn tất.
+
+#### Kết quả thực tế
+
+```text
+Session ID: 1de12289-69f2-4627-a3b8-0f15a54b91b2
+Total requests: 5
+Instances used: {'instance-4429f9', 'instance-aedfd7', 'instance-1ce1aa'}
+✅ All requests served despite different instances!
+
+--- Conversation History ---
+Total messages: 10
+✅ Session history preserved across all instances via Redis!
+```
+
+#### Kiểm tra failover
+
+Sau khi dừng `agent-1`, request tiếp theo vẫn được xử lý bởi instance còn lại:
+
+```text
+StatusCode=200
+served_by=instance-aedfd7
+storage=redis
+turn=7
+```
+
+Traffic tiếp tục được phục vụ và conversation vẫn đọc được từ Redis. Lưu ý: file `test_stateless.py` hiện tại không tự kill random instance như phần mô tả; việc dừng instance và kiểm tra failover đã được thực hiện bổ sung thủ công.
 
 ## Part 6: Final Project
 
