@@ -434,6 +434,8 @@ railway.cmd up --detach
 
 https://courageous-victory-production-dfc21644.up.railway.app
 
+![alt text](image.png)
+
 **Trạng thái:** Railway service `Online`  
 **Deployment ID:** `40607b46-fecd-4d14-a6d6-e9e29973a333`
 
@@ -471,6 +473,73 @@ StatusCode=200
 Ứng dụng đã được deploy thành công lên Railway. Public URL hoạt động, endpoint `/health` trả `200 OK`, và endpoint `/ask` trả response JSON với `200 OK`.
 
 ### Exercise 3.2: Deploy Render
+
+#### Cấu hình và workdir
+
+Repository URL: https://github.com/ducminh03/K5-L3A-DAY14-VuDucMinh-2A202603673-Deployment-Benchmark-Observability  
+Blueprint path: `03-cloud-deployment/render/render.yaml`  
+Source root directory: `03-cloud-deployment/railway`
+
+Render Blueprint ban đầu không deploy trực tiếp từ thư mục chứa `render.yaml` vì source code (`app.py`, `requirements.txt`) nằm trong thư mục `03-cloud-deployment/railway`. Đã thêm `rootDir: 03-cloud-deployment/railway` vào web service để Render dùng đúng source.
+
+Redis Blueprint cũng yêu cầu IP allow list, nên đã thêm allow list cho lab testing trong [render.yaml](./03-cloud-deployment/render/render.yaml). Thay đổi đã được push lên GitHub ở commit `e5a6bcd`.
+
+#### So sánh `render.yaml` và `railway.toml`
+
+| Nội dung | Render | Railway |
+|----------|--------|---------|
+| Định dạng | YAML Blueprint | TOML Config as Code |
+| Build | `runtime: python`, `buildCommand: pip install -r requirements.txt` | Railway tự detect Nixpacks từ `builder = "NIXPACKS"` |
+| Start command | `uvicorn app:app --host 0.0.0.0 --port $PORT` | `uvicorn app:app --host 0.0.0.0 --port $PORT` |
+| Health check | `healthCheckPath: /health` | `healthcheckPath = "/health"` |
+| Region | Khai báo `singapore` | Railway tự chọn/được cấu hình theo project |
+| Environment variables | Khai báo trong `envVars`, secret dùng `sync: false` hoặc `generateValue` | Đặt bằng `railway variables set` hoặc Dashboard |
+| Redis | Khai báo service Redis `agent-cache` trong cùng Blueprint | Không khai báo Redis trong `railway.toml` của bài này |
+| Auto deploy | `autoDeploy: true` khi kết nối GitHub | Có thể deploy bằng CLI hoặc kết nối source |
+
+#### Kết quả deploy
+
+Render Blueprint `day14-deployment-benchmark` đã tạo thành công:
+
+- Redis service: `agent-cache`
+- Web service: `ai-agent`
+- Plan: Free
+- Public URL: https://ai-agent-n2yy.onrender.com
+
+![alt text](image-1.png)
+
+#### Test health check
+
+```powershell
+iwr -UseBasicParsing https://ai-agent-n2yy.onrender.com/health
+```
+
+**Kết quả thực tế:**
+
+```text
+StatusCode=200
+{"status":"ok","uptime_seconds":43.4,"platform":"Railway","timestamp":"2026-11-25T09:40:16.293179+00:00"}
+```
+
+#### Test agent endpoint
+
+```powershell
+iwr -UseBasicParsing -Method POST `
+  -Uri "https://ai-agent-n2yy.onrender.com/ask" `
+  -ContentType "application/json" `
+  -Body '{"question":"What is Docker?"}'
+```
+
+**Kết quả thực tế:**
+
+```text
+StatusCode=200
+{"question":"What is Docker?","answer":"Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!","platform":"Railway"}
+```
+
+#### Kết luận
+
+Ứng dụng đã deploy thành công trên Render. Blueprint tạo được cả Redis và web service; public URL trả HTTP `200 OK` cho cả `/health` và `/ask`. Vì Render dùng source chung từ `03-cloud-deployment/railway`, response vẫn ghi `platform: Railway` theo code mẫu, nhưng service thực tế đang chạy trên Render.
 
 ### Exercise 3.3: GCP Cloud Run (Optional)
 
